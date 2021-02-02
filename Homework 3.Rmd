@@ -1,0 +1,228 @@
+---
+title: "Homework 3"
+author: "Kevin"
+date: "10/4/2020"
+output: html_document
+---
+
+```{r, warning = FALSE}
+# run Packages
+library(ggplot2)
+library(caret)
+library(pdp)
+library(glmnet)
+library(vip)
+library(magrittr)
+library(earth)
+
+#Prepare data
+raw.df<-read.csv("insurance.csv")
+raw.df<-na.omit(raw.df)
+dv = "charges"
+```
+# Question 1 [5 marks]
+## Out of the following methods, which is the best method to predict the DV from the dataset.
+```{r}
+#Splitting
+set.seed(1337)
+index <- createDataPartition(raw.df[, dv], p= 2/3, list=FALSE) 
+train.dat <- raw.df[ index,] 
+test.dat <- raw.df[-index,] 
+
+# Categorical Variables
+dmy <- dummyVars(charges ~., data = train.dat,fullRank = T )
+x.train<- data.frame(predict(dmy, newdata = train.dat) )
+y.train <- train.dat[, dv]
+x.test<- data.frame(predict(dmy, newdata = test.dat) )
+y.test <- test.dat[, dv]
+
+train.df <- cbind(x.train, charges = y.train)
+test.df <- cbind(x.test, charges = y.test)
+
+# Elastic
+alpha.vec <- seq(0, 1, by = 0.01)
+lambda.vec <- seq(0, 100, length.out = 30)
+elasticgrid <- expand.grid(alpha = alpha.vec, lambda = lambda.vec)
+
+tr.Control <- trainControl(method = "repeatedcv",
+                           number = 10, repeats = 5
+                           )
+
+set.seed(1337)
+elastic.df<- train(charges ~ ., data = train.df, 
+                 method = 'glmnet', 
+                 trControl = tr.Control,
+                 preProc = c("center", "scale"),
+                 verbose = FALSE,
+                 tuneGrid = elasticgrid
+                 )
+# Ridge
+ridge.grid<- expand.grid(alpha=0, lambda = lambda.vec)
+set.seed(1337)
+ridge.df <- train(charges ~ ., data = train.df, 
+                method='glmnet',
+               tuneGrid = ridge.grid,
+               trControl = tr.Control,
+               preProc = c('center','scale'))
+
+#Lasso
+lasso.grid<- expand.grid(alpha=1, lambda = lambda.vec)
+set.seed(1337)
+lasso.df <- train(charges ~ ., data = train.df, 
+                method='glmnet',
+               tuneGrid = lasso.grid,
+               trControl = tr.Control,
+               preProc = c('center','scale'))
+
+# Linear Regression
+set.seed(1337)
+lm.df <- train(charges ~ ., data = train.df, 
+              method = 'lm',
+               trControl = tr.Control
+                )
+
+# MARS
+pred.vars <- names(train.df)[!names(train.df) %in% dv]
+mars.grid = expand.grid(degree = 1:2, nprune = length(pred.vars))
+
+set.seed(1337)
+mars.df <- train(charges ~ ., data = train.df, 
+                 method = 'earth', 
+                 trControl = tr.Control,
+                tuneGrid = mars.grid,
+                preProc = c("center", "scale")
+                )
+
+# Compare
+models <- list(elastic = elastic.df, 
+               ridge = ridge.df,
+               lasso = lasso.df,
+               linear = lm.df, 
+               mars = mars.df)
+
+# compare.train<- resamples(models) %>% summary( metric = "RMSE")
+
+elastic.pred <- predict(elastic.df, newdata = test.df)
+ridge.pred<- predict(ridge.df, newdata = test.df)
+lasso.pred<- predict(lasso.df,newdata = test.df)
+linear.pred <- predict(lm.df, newdata=test.df)
+mars.pred <- as.numeric(predict(mars.df, newdata = test.df))
+
+#Compare between RMSE
+compare.test.RMSE<- data.frame(RMSE=rbind(
+  Elastic = RMSE(elastic.pred, test.df$charges),
+  Ridge = RMSE(ridge.pred, test.df$charges),
+  Lasso = RMSE(lasso.pred, test.df$charges),
+  LinearRegression = RMSE(linear.pred, test.df$charges),
+  MARS = RMSE(mars.pred, test.df$charges)
+  ))
+compare.test.RMSE["Method"] <- rownames(compare.test.RMSE)
+ggplot(compare.test.RMSE,aes(x=Method, y=RMSE))+
+  geom_bar(stat="identity")+
+  theme_bw()
+#Compare between R2
+compare.test.R2<- data.frame(R2=rbind(
+  Elastic = R2(elastic.pred, test.df$charges),
+  Ridge = R2(ridge.pred, test.df$charges),
+  Lasso = R2(lasso.pred, test.df$charges),
+  LinearRegression = R2(linear.pred, test.df$charges),
+  MARS = R2(mars.pred, test.df$charges)
+  ))
+compare.test.R2["Method"] <- rownames(compare.test.R2)
+ggplot(compare.test.R2,aes(x=Method, y=R2))+
+  geom_bar(stat="identity")+
+  theme_bw()
+```
+
+### MARS would be the best method since it have a lower RMSE which means that it have a lower error in predicting charges and that it has the highest R2 which means that it is able to a larger proportion of variance in charges.
+
+# Question 2 [5 marks]
+
+## Using LASSO and MARS, find out which variables are important for predicting the DV; and depict their effect on the DV.
+```{r}
+p2 <- vip(lasso.df) + ggtitle("LASSO") 
+p3 <- vip(mars.df) + ggtitle("MARS")
+grid.arrange(p2, p3, ncol = 2)
+```
+
+### Being a smoker, age, BMI and number of children are important in predicting charges.
+```{r, warning = FALSE}
+lasso.p1<-partial(lasso.df, pred.var = "smokeryes",
+            ice=TRUE,
+            train = test.df,
+            chull = TRUE,
+            plot.engine = "ggplot"
+            )
+p1 <- ggplot2::autoplot(lasso.p1,ylab="charges")
+lasso.p2<-partial(lasso.df, pred.var = "age",
+            ice=TRUE,
+            train = test.df,
+            chull = FALSE,
+            plot.engine = "ggplot"
+            )
+p2 <- ggplot2::autoplot(lasso.p2,ylab="charges")
+lasso.p3<-partial(lasso.df, pred.var = "bmi",
+            ice=TRUE,
+            train = test.df,
+            chull = FALSE,
+            plot.engine = "ggplot"
+            )
+p3 <- ggplot2::autoplot(lasso.p3,ylab="charges")
+lasso.p4<-partial(lasso.df, pred.var = "children",
+            ice=TRUE,
+            train = test.df,
+            chull = FALSE,
+            plot.engine = "ggplot"
+            )
+p4 <- ggplot2::autoplot(lasso.p4,ylab="charges")
+grid.arrange(p1, p2, p3, p4, ncol = 2, top = "LASSO")
+```
+```{r, warning = FALSE}
+mars.p1<-partial(mars.df, pred.var = "smokeryes",
+            ice=TRUE,
+            train = test.df,
+            chull = TRUE,
+            plot.engine = "ggplot"
+            )
+pp1 <- ggplot2::autoplot(mars.p1,ylab="charges")
+mars.p2<-partial(mars.df, pred.var = "age",
+            ice=TRUE,
+            train = test.df,
+            chull = FALSE,
+            plot.engine = "ggplot"
+            )
+pp2 <- ggplot2::autoplot(mars.p2,ylab="charges")
+mars.p3<-partial(mars.df, pred.var = "bmi",
+            ice=TRUE,
+            train = test.df,
+            chull = FALSE,
+            plot.engine = "ggplot"
+            )
+pp3 <- ggplot2::autoplot(mars.p3,ylab="charges")
+mars.p4<-partial(mars.df, pred.var = "children",
+            ice=TRUE,
+            train = test.df,
+            chull = FALSE,
+            plot.engine = "ggplot"
+            )
+pp4 <- ggplot2::autoplot(mars.p4,ylab="charges")
+grid.arrange(pp1, pp2, pp3, pp4, ncol = 2, top = "MARS")
+```
+
+# Bonus Question [2.5 marks]
+## 2-way interactions
+### Linear Model
+```{r}
+set.seed(1337)
+lm.2wi <- lm(formula = charges ~ .^2, data = train.df)
+summary(lm.2wi)
+```
+#### Using the linear model, there is an interaction effect of Age X South West Region (p<0.05) and BMI X Smoker (p<0.001).
+
+### MARS
+```{r}
+set.seed(1337)
+mars.2wi <- earth(charges ~ .,  data = train.df,  degree = 2)
+summary(mars.2wi)
+```
+#### Using MARS, there is an interaction effect of BMI X Smoker.
